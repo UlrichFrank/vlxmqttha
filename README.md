@@ -177,35 +177,6 @@ The project includes a custom fork of pyvlx with extended features. The submodul
 git submodule update --remote
 ```
 
-#### Making changes to pyvlx
-
-1. Navigate to the submodule directory:
-
-```bash
-cd mod/pyvlx
-```
-
-2. Create and checkout a feature branch:
-
-```bash
-git checkout -b feature/my-feature
-```
-
-3. Make your changes and commit:
-
-```bash
-git add .
-git commit -m "Add my feature"
-```
-
-4. Push to your fork:
-
-```bash
-git push origin feature/my-feature
-```
-
-5. Create a pull request on GitHub
-
 #### Installing your local pyvlx version for testing
 
 To test local changes to pyvlx without committing to GitHub, install in editable mode:
@@ -238,14 +209,6 @@ logfile = vlxmqttha.log
 ```
 
 ### Testing
-
-#### Verify pyvlx import
-
-To verify connectivity before running the full application:
-
-```bash
-python3 -c "from pyvlx import PyVLX; print('pyvlx imported successfully')"
-```
 
 #### Monitor MQTT topics (in another terminal)
 
