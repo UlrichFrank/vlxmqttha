@@ -14,7 +14,7 @@ from pyvlx.log import PYVLXLOG
 
 from ha_mqtt.ha_device import HaDevice
 from ha_mqtt.mqtt_device_base import MqttDeviceSettings
-from ha_mqtt.util import HaDeviceClass
+from ha_mqtt.util import HaCoverDeviceClass
 from mqtt_cover import MqttCover
 from mqtt_switch_with_icon import MqttSwitchWithIcon
 
@@ -151,19 +151,19 @@ class VeluxMqttCover:
 
     def getHaDeviceClassFromVlxNode(self, vlxnode):
         if isinstance(vlxnode, Window):
-            return HaDeviceClass.WINDOW
+            return HaCoverDeviceClass.WINDOW
         if isinstance(vlxnode, Blind):
-            return HaDeviceClass.BLIND
+            return HaCoverDeviceClass.BLIND
         if isinstance(vlxnode, Awning):
-            return HaDeviceClass.AWNING
+            return HaCoverDeviceClass.AWNING
         if isinstance(vlxnode, RollerShutter):
-            return HaDeviceClass.SHUTTER
+            return HaCoverDeviceClass.SHUTTER
         if isinstance(vlxnode, GarageDoor):
-            return HaDeviceClass.GARAGE
+            return HaCoverDeviceClass.GARAGE
         if isinstance(vlxnode, Gate):
-            return HaDeviceClass.GATE
+            return HaCoverDeviceClass.GATE
         if isinstance(vlxnode, Blade):
-            return HaDeviceClass.SHADE
+            return HaCoverDeviceClass.SHADE
         
     async def registerMqttCallbacks(self):
         self.coverDevice.callback_open = self.mqtt_callback_open

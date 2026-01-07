@@ -10,7 +10,7 @@ import time
 from paho.mqtt.client import Client, MQTTMessage
 
 from ha_mqtt import mqtt_device_base
-from ha_mqtt.util import HaDeviceClass
+from ha_mqtt.util import HaCoverDeviceClass
 from ha_mqtt.mqtt_device_base import MqttDeviceSettings
 
 
@@ -31,7 +31,7 @@ class MqttCover(mqtt_device_base.MqttDeviceBase):
     device_type = "cover"
     #initial_state = util.OFF
 
-    def __init__(self, settings: MqttDeviceSettings, device_class: HaDeviceClass, inverse_position : bool = False):
+    def __init__(self, settings: MqttDeviceSettings, device_class: HaCoverDeviceClass, inverse_position : bool = False):
         # internal tracker of the state
         #self.state: bool = self.__class__.initial_state
 
