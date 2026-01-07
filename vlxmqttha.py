@@ -7,6 +7,7 @@ import configparser
 import paho.mqtt.client as mqtt
 import argparse
 import asyncio
+import time
 from threading import Semaphore
 from pyvlx import Position, PyVLX, OpeningDevice, Window, Blind, Awning, RollerShutter, GarageDoor, Gate, Blade
 from pyvlx.log import PYVLXLOG
@@ -41,6 +42,10 @@ VLX_PW = config.get("velux", "password")
 VERBOSE = config.get("log", "verbose", fallback=False)
 KLF200LOG = config.get("log", "klf200", fallback=False)
 LOGFILE = config.get("log", "logfile", fallback=None)
+# [restart]
+RESTART_INTERVAL = config.getint("restart", "restart_interval", fallback=0)  # hours, 0 = disabled
+HEALTH_CHECK_INTERVAL = config.getint("restart", "health_check_interval", fallback=0)  # seconds, 0 = disabled
+RESTART_ON_ERROR = config.getboolean("restart", "restart_on_error", fallback=False)
 
 APPNAME = "vlxmqttha"
 
@@ -78,6 +83,11 @@ PYVLXLOG.addHandler(ch)
 # at the same time and ignores the third one sent
 klf_command_semaphore = Semaphore(2)
 
+# Global state for restart handling
+restart_event = None
+last_successful_klf_contact = time.time()
+last_restart_time = time.time()
+
 def call_async_blocking(coroutine):
     klf_command_semaphore.acquire()
     try:
@@ -87,6 +97,18 @@ def call_async_blocking(coroutine):
         logging.error(str(e))
     klf_command_semaphore.release()
 
+
+def trigger_restart():
+    """Trigger application restart by stopping the event loop"""
+    global restart_event
+    if restart_event:
+        restart_event.set()
+
+
+def record_klf_contact():
+    """Record successful contact with KLF200"""
+    global last_successful_klf_contact
+    last_successful_klf_contact = time.time()
 
 class VeluxMqttCover:
     """
@@ -296,6 +318,7 @@ class VeluxMqttHomeassistant:
         logging.debug("klf200      : %s" % VLX_HOST)
         self.pyvlx = PyVLX(host=VLX_HOST, password=VLX_PW, loop=loop)
         await self.pyvlx.load_nodes()
+        record_klf_contact()
 
         logging.debug("vlx nodes   : %s" % (len(self.pyvlx.nodes)))
         for node in self.pyvlx.nodes:
@@ -323,6 +346,7 @@ class VeluxMqttHomeassistant:
 
     async def vlxnode_callback(self, vlxnode):
         logging.debug("%s at %d%%" % (vlxnode.name, vlxnode.position.position_percent))
+        record_klf_contact()
         mqttid = self.generate_id(vlxnode)
         mqttDevice = self.mqttDevices[mqttid]
         if mqttDevice:
@@ -343,6 +367,54 @@ class VeluxMqttHomeassistant:
         logging.info("Disconnecting from KLF200")
         self.pyvlx.disconnect()
 
+
+async def health_check_task():
+    """Periodically check KLF200 health and trigger restart if necessary"""
+    if HEALTH_CHECK_INTERVAL <= 0:
+        return
+    
+    logging.info(f"Health check enabled: every {HEALTH_CHECK_INTERVAL} seconds")
+    
+    while True:
+        try:
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+            
+            time_since_contact = time.time() - last_successful_klf_contact
+            
+            if time_since_contact > HEALTH_CHECK_INTERVAL * 2:
+                logging.warning(
+                    f"KLF200 health check failed: No contact for {time_since_contact:.0f} seconds"
+                )
+                
+                if RESTART_ON_ERROR:
+                    logging.warning("Triggering automatic restart due to health check failure")
+                    trigger_restart()
+                    break
+        except Exception as e:
+            logging.error(f"Error in health check task: {e}")
+
+
+async def restart_interval_task():
+    """Periodically restart the application"""
+    if RESTART_INTERVAL <= 0:
+        return
+    
+    restart_seconds = RESTART_INTERVAL * 3600
+    logging.info(f"Periodic restart enabled: every {RESTART_INTERVAL} hours ({restart_seconds} seconds)")
+    
+    while True:
+        try:
+            await asyncio.sleep(restart_seconds)
+            
+            time_since_last_restart = time.time() - last_restart_time
+            logging.info(
+                f"Triggering periodic restart (uptime: {time_since_last_restart/3600:.1f} hours)"
+            )
+            trigger_restart()
+            break
+        except Exception as e:
+            logging.error(f"Error in restart interval task: {e}")
+
 # Use the signal module to handle signals
 signal.signal(signal.SIGTERM, lambda: asyncio.get_event_loop().stop())
 signal.signal(signal.SIGINT, lambda: asyncio.get_event_loop().stop())
@@ -351,6 +423,7 @@ if __name__ == '__main__':
     # pylint: disable=invalid-name
     try:
         LOOP = asyncio.get_event_loop()
+        restart_event = asyncio.Event()
 
         pid = str(os.getpid())
         pidfile = "/tmp/vlxmqtthomeassistant.pid"
@@ -367,6 +440,15 @@ if __name__ == '__main__':
         LOOP.run_until_complete(veluxMqttHomeassistant.connect_klf200(LOOP))
         LOOP.run_until_complete(veluxMqttHomeassistant.register_devices())
         LOOP.run_until_complete(veluxMqttHomeassistant.update_device_state())
+
+        # Create background tasks for health check and restart interval
+        health_check = asyncio.ensure_future(health_check_task())
+        restart_interval = asyncio.ensure_future(restart_interval_task())
+
+        if RESTART_INTERVAL > 0:
+            logging.info(f"Scheduled restart every {RESTART_INTERVAL} hours")
+        if HEALTH_CHECK_INTERVAL > 0:
+            logging.info(f"Health check enabled every {HEALTH_CHECK_INTERVAL} seconds")
 
         LOOP.run_forever()
     except KeyboardInterrupt:
