@@ -1,7 +1,7 @@
 """
 MQTT switch with custom icon for Homeassistant autodiscovery.
 """
-#  Copyright (c) 2023 - Tobias Jaehnel
+#  Copyright (c) 2023 Tobias Jaehnel, Ulrich Frank
 #  This code is published under the MIT license
 
 from typing import Optional

@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
+"""
+KLF200 to MQTT bridge application for Homeassistant integration.
+"""
+#  Copyright (c) 2023 Tobias Jaehnel, Ulrich Frank
+#  This code is published under the MIT license
+
 import os
 import sys
 import signal
 import logging
 import configparser
 import paho.mqtt.client as mqtt
+from paho.mqtt.client import CallbackAPIVersion  # type: ignore[attr-defined]
 import argparse
 import asyncio
 import time
@@ -13,7 +20,7 @@ from pathlib import Path
 from typing import Optional, Dict, Coroutine, Any
 from contextlib import asynccontextmanager
 
-from pyvlx import Position, PyVLX, OpeningDevice, Window, Blind, Awning, RollerShutter, GarageDoor, Gate, Blade
+from pyvlx import Position, PyVLX, OpeningDevice, Window, Blind, Awning, RollerShutter, GarageDoor, Gate, Blade  # type: ignore[attr-defined]
 from pyvlx.log import PYVLXLOG
 
 from ha_mqtt.ha_device import HaDevice
@@ -240,34 +247,34 @@ class VeluxMqttCover:
         else:
             mqtt_state = "open"
         
-        self.coverDevice.publish_state(mqtt_state)
+        self.coverDevice.update_state(mqtt_state)
 
     def updateLimitSwitch(self) -> None:
         """Update keep-open switch state."""
         max_position = self.vlxnode.limitation_max.position
-        self.limitSwitchDevice.publish_state('on' if max_position < 100 else 'off')
+        self.limitSwitchDevice.update_state('on' if max_position < 100 else 'off')
                 
     def mqtt_callback_open(self) -> None:
         """Handle MQTT open command."""
         logging.debug(f"Opening {self.vlxnode.name}")
-        call_async_blocking(self.vlxnode.open(wait_for_completion=False))
+        call_async_blocking(self.vlxnode.open(wait_for_completion=False))  # type: ignore[no-untyped-call]
 
     def mqtt_callback_close(self) -> None:
         """Handle MQTT close command."""
         logging.debug(f"Closing {self.vlxnode.name}")
-        call_async_blocking(self.vlxnode.close(wait_for_completion=False))
+        call_async_blocking(self.vlxnode.close(wait_for_completion=False))  # type: ignore[no-untyped-call]
 
     def mqtt_callback_stop(self) -> None:
         """Handle MQTT stop command."""
         logging.debug(f"Stopping {self.vlxnode.name}")
-        call_async_blocking(self.vlxnode.stop(wait_for_completion=False))
+        call_async_blocking(self.vlxnode.stop(wait_for_completion=False))  # type: ignore[no-untyped-call]
 
     def mqtt_callback_position(self, position: int) -> None:
         """Handle MQTT position command."""
         logging.debug(f"Moving {self.vlxnode.name} to position {position}%")
         call_async_blocking(
-            self.vlxnode.set_position(
-                Position(position_percent=int(position)),
+            self.vlxnode.set_position(  # type: ignore[no-untyped-call]
+                Position(position_percent=int(position)),  # type: ignore[no-untyped-call]
                 wait_for_completion=False
             )
         )
@@ -276,23 +283,27 @@ class VeluxMqttCover:
         """Enable keep-open limitation."""
         logging.debug(f"Enable 'keep open' limitation of {self.vlxnode.name}")
         call_async_blocking(
-            self.vlxnode.set_position_limitations(
-                position_max=Position(position_percent=0),
-                position_min=Position(position_percent=0)
+            self.vlxnode.set_position_limitations(  # type: ignore[no-untyped-call]
+                position_max=Position(position_percent=0),  # type: ignore[no-untyped-call]
+                position_min=Position(position_percent=0)  # type: ignore[no-untyped-call]
             )
         )
 
     def mqtt_callback_keepopen_off(self) -> None:
         """Disable keep-open limitation."""
         logging.debug(f"Disable 'keep open' limitation of {self.vlxnode.name}")
-        call_async_blocking(self.vlxnode.clear_position_limitations())
+        call_async_blocking(self.vlxnode.clear_position_limitations())  # type: ignore[no-untyped-call]
 
     def close(self) -> None:
         """Properly close and cleanup device."""
         try:
-            self.coverDevice.close()
+            self.coverDevice.stop()
         except Exception as e:
             logging.error(f"Error closing cover device {self.vlxnode.name}: {e}", exc_info=True)
+
+    def stop(self) -> None:
+        """Alias for close() for compatibility."""
+        self.close()
 
     def __del__(self) -> None:
         """Cleanup on deletion."""
@@ -315,12 +326,12 @@ class VeluxMqttCoverInverted(VeluxMqttCover):
     def mqtt_callback_open(self) -> None:
         """Handle inverted open (closes device)."""
         logging.debug(f"Opening {self.vlxnode.name} (inverted)")
-        call_async_blocking(self.vlxnode.close(wait_for_completion=False))
+        call_async_blocking(self.vlxnode.close(wait_for_completion=False))  # type: ignore[no-untyped-call]
 
     def mqtt_callback_close(self) -> None:
         """Handle inverted close (opens device)."""
         logging.debug(f"Closing {self.vlxnode.name} (inverted)")
-        call_async_blocking(self.vlxnode.open(wait_for_completion=False))
+        call_async_blocking(self.vlxnode.open(wait_for_completion=False))  # type: ignore[no-untyped-call]
 
     def updateCover(self) -> None:
         """Update cover with inverted state."""
@@ -338,7 +349,7 @@ class VeluxMqttCoverInverted(VeluxMqttCover):
         else:
             mqtt_state = "open"
         
-        self.coverDevice.publish_state(mqtt_state)
+        self.coverDevice.update_state(mqtt_state)
 
 
 
@@ -355,7 +366,7 @@ class VeluxMqttHomeassistant:
     
     def __init__(self) -> None:
         mqtt_client_id = f"{APPNAME}_{os.getpid()}"
-        self.mqttc: mqtt.Client = mqtt.Client(mqtt_client_id)
+        self.mqttc: mqtt.Client = mqtt.Client(CallbackAPIVersion.VERSION1, mqtt_client_id)
         self.pyvlx: Optional[PyVLX] = None
         self.mqttDevices: Dict[str, VeluxMqttCover] = {}
 
@@ -390,35 +401,41 @@ class VeluxMqttHomeassistant:
     async def connect_klf200(self, loop: asyncio.AbstractEventLoop) -> None:
         """Connect to KLF200 gateway."""
         logging.debug(f"Connecting to KLF200: {VLX_HOST}")
-        self.pyvlx = PyVLX(host=VLX_HOST, password=VLX_PW, loop=loop)
-        await self.pyvlx.load_nodes()
+        self.pyvlx = PyVLX(host=VLX_HOST, password=VLX_PW, loop=loop)  # type: ignore[no-untyped-call]
+        await self.pyvlx.load_nodes()  # type: ignore[union-attr,no-untyped-call]
         record_klf_contact()
 
-        logging.info(f"Connected to KLF200, found {len(self.pyvlx.nodes)} nodes")
-        for node in self.pyvlx.nodes:
+        logging.info(f"Connected to KLF200, found {len(self.pyvlx.nodes)} nodes")  # type: ignore[union-attr]
+        for node in self.pyvlx.nodes:  # type: ignore[union-attr]
             logging.debug(f"  - {node.name}")
 
     async def register_devices(self) -> None:
         """Register all VLX devices as MQTT devices."""
-        for vlxnode in self.pyvlx.nodes:
+        if not self.pyvlx:
+            logging.error("PyVLX not initialized")
+            return
+        
+        for vlxnode in self.pyvlx.nodes:  # type: ignore[attr-defined]
             if isinstance(vlxnode, OpeningDevice):
-                vlxnode.register_device_updated_cb(self.vlxnode_callback)
+                vlxnode.register_device_updated_cb(self.vlxnode_callback)  # type: ignore[no-untyped-call]
                 mqttid = self.generate_id(vlxnode)
                 
                 if isinstance(vlxnode, Awning) and HA_INVERT_AWNING:
-                    mqttCover = VeluxMqttCoverInverted(self.mqttc, vlxnode, mqttid)
+                    cover: VeluxMqttCover = VeluxMqttCoverInverted(self.mqttc, vlxnode, mqttid)
                 else:
-                    mqttCover = VeluxMqttCover(self.mqttc, vlxnode, mqttid)
+                    cover = VeluxMqttCover(self.mqttc, vlxnode, mqttid)
                 
-                self.mqttDevices[mqttid] = mqttCover
-                await mqttCover.registerMqttCallbacks()
+                self.mqttDevices[mqttid] = cover
+                await cover.registerMqttCallbacks()
                 logging.debug(f"Watching: {vlxnode.name}")
     
     async def update_device_state(self) -> None:
         """Request initial state of all devices."""
-        for vlxnode in self.pyvlx.nodes:
+        if not self.pyvlx:
+            return
+        for vlxnode in self.pyvlx.nodes:  # type: ignore[attr-defined]
             if isinstance(vlxnode, OpeningDevice):
-                await self.pyvlx.get_limitation(vlxnode.node_id)        
+                await self.pyvlx.get_limitation(vlxnode.node_id)  # type: ignore[union-attr,no-untyped-call]        
 
     async def vlxnode_callback(self, vlxnode: OpeningDevice) -> None:
         """Handle VLX node state update."""
@@ -432,13 +449,14 @@ class VeluxMqttHomeassistant:
     def generate_id(self, vlxnode: OpeningDevice) -> str:
         """Generate unique MQTT ID from VLX node name."""
         umlauts = {ord('ä'): 'ae', ord('ü'): 'ue', ord('ö'): 'oe', ord('ß'): 'ss'}
-        return "vlx-" + vlxnode.name.replace(" ", "-").lower().translate(umlauts)
+        node_name = str(vlxnode.name)  # type: ignore[union-attr]
+        return "vlx-" + node_name.replace(" ", "-").lower().translate(umlauts)
 
     def close(self) -> None:
         """Properly close all connections."""
         for device in list(self.mqttDevices.values()):
             try:
-                device.close()
+                device.stop()
             except Exception as e:
                 logging.error(f"Error closing device: {e}", exc_info=True)
         
@@ -453,7 +471,7 @@ class VeluxMqttHomeassistant:
         
         if self.pyvlx:
             try:
-                self.pyvlx.disconnect()
+                self.pyvlx.disconnect()  # type: ignore[no-untyped-call]
                 logging.info("Disconnected from KLF200")
             except Exception as e:
                 logging.error(f"Error disconnecting from KLF200: {e}", exc_info=True)

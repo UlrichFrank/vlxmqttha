@@ -1,7 +1,7 @@
 """
 MQTT Cover device implementation for Homeassistant autodiscovery.
 """
-#  Copyright (c) 2023 - Tobias Jaehnel
+#  Copyright (c) 2023 Tobias Jaehnel, Ulrich Frank
 #  This code is published under the MIT license
 
 import threading
@@ -63,11 +63,11 @@ class MqttCover(mqtt_device_base.MqttDeviceBase):
 
         super().__init__(settings)
 
-    def close(self) -> None:
+    def stop(self) -> None:
         """Unsubscribe and cleanup."""
         if self.command_topic:
             self._client.unsubscribe(self.command_topic)
-        super().close()
+        super().stop()
 
     def pre_discovery(self) -> None:
         """Configure MQTT topics and device class for Homeassistant discovery."""
@@ -79,11 +79,11 @@ class MqttCover(mqtt_device_base.MqttDeviceBase):
         self.add_config_option("set_position_topic", self.command_topic)
         
         if self.inverse_position:
-            self.add_config_option("position_open", 100)
-            self.add_config_option("position_closed", 0)
+            self.add_config_option("position_open", "100")
+            self.add_config_option("position_closed", "0")
         else:
-            self.add_config_option("position_open", 0)
-            self.add_config_option("position_closed", 100)
+            self.add_config_option("position_open", "0")
+            self.add_config_option("position_closed", "100")
         
         self.add_config_option("device_class", self.device_class.value)
 
@@ -116,7 +116,8 @@ class MqttCover(mqtt_device_base.MqttDeviceBase):
             msg: MQTT message with command payload
         """
         payload = msg.payload
-        self._logger.debug(f"Received command {payload} for {self._unique_id}")
+        payload_str = payload.decode("utf-8") if isinstance(payload, bytes) else str(payload)
+        self._logger.debug(f"Received command {payload_str} for {self._unique_id}")
         
         try:
             if payload == b'OPEN':
@@ -158,12 +159,14 @@ class MqttCover(mqtt_device_base.MqttDeviceBase):
                         f"for {self._unique_id}"
                     )
         except (ValueError, TypeError) as e:
+            payload_str = payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else str(payload)
             self._logger.error(
-                f"Invalid command payload '{payload}' for {self._unique_id}: {e}",
+                f"Invalid command payload '{payload_str}' for {self._unique_id}: {e}",
                 exc_info=True
             )
         except Exception as e:
+            payload_str = payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else str(payload)
             self._logger.exception(
-                f"Unexpected error processing command '{payload}' for {self._unique_id}"
+                f"Unexpected error processing command '{payload_str}' for {self._unique_id}"
             )
  
