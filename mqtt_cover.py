@@ -98,7 +98,7 @@ class MqttCover(mqtt_device_base.MqttDeviceBase):
             retain: Whether to retain the message
         """
         self._logger.debug(f"Publishing position {position}% for {self._unique_id}")
-        self._client.publish(self.position_topic, position, retain=retain)
+        self._client.publish(self.position_topic, str(position), retain=retain)
         # Give MQTT client time to process before next operation
         time.sleep(MQTT_PUBLISH_DELAY_MS / 1000.0)
 

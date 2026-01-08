@@ -40,7 +40,7 @@ args = parser.parse_args()
 # Configuration loading with validation
 def load_config(config_file: str) -> configparser.RawConfigParser:
     """Load and validate configuration file."""
-    config = configparser.RawConfigParser()
+    config = configparser.RawConfigParser(inline_comment_prefixes=('#',))
     files_read = config.read(config_file)
     if not files_read:
         raise FileNotFoundError(f"Config file not found: {config_file}")
@@ -127,7 +127,6 @@ state_lock: Lock = Lock()
 
 _last_successful_klf_contact: float = time.time()
 _last_restart_time: float = time.time()
-_restart_event: Optional[asyncio.Event] = None
 
 def call_async_blocking(coroutine: Coroutine[Any, Any, Any]) -> None:
     """Execute async coroutine in blocking manner with semaphore protection."""
@@ -145,11 +144,8 @@ def call_async_blocking(coroutine: Coroutine[Any, Any, Any]) -> None:
 
 def trigger_restart() -> None:
     """Trigger application restart by stopping the event loop."""
-    global _restart_event
-    if _restart_event is not None:
-        _restart_event.set()
-    else:
-        logging.error("Restart event not initialized")
+    logging.info("Stopping event loop to trigger restart")
+    LOOP.call_soon_threadsafe(LOOP.stop)
 
 
 def record_klf_contact() -> None:
@@ -218,6 +214,10 @@ class VeluxMqttCover:
         
     async def registerMqttCallbacks(self) -> None:
         """Register MQTT command callbacks."""
+        # Ensure MQTT topics are initialized
+        self.coverDevice.pre_discovery()
+        self.limitSwitchDevice.pre_discovery()
+        
         self.coverDevice.callback_open = self.mqtt_callback_open
         self.coverDevice.callback_close = self.mqtt_callback_close
         self.coverDevice.callback_stop = self.mqtt_callback_stop
@@ -234,7 +234,7 @@ class VeluxMqttCover:
     def updateCover(self) -> None:
         """Update cover state based on VLX node."""
         position = self.vlxnode.position.position_percent
-        target_position = self.vlxnode.target_position.position_percent
+        target_position = self.vlxnode.target.position_percent
 
         self.coverDevice.publish_position(position)
         
@@ -251,8 +251,15 @@ class VeluxMqttCover:
 
     def updateLimitSwitch(self) -> None:
         """Update keep-open switch state."""
-        max_position = self.vlxnode.limitation_max.position
-        self.limitSwitchDevice.update_state('on' if max_position < 100 else 'off')
+        try:
+            # limitation_max shows the upper limit position
+            # If limitation is set (not IgnorePosition), switch is 'on'
+            max_position = self.vlxnode.limitation_max.position_percent
+            self.limitSwitchDevice.update_state('on' if max_position < 100 else 'off')
+        except (AttributeError, ValueError):
+            # If limitation_max is not properly set, assume fully open
+            logging.debug(f"limitation_max not available or invalid for {self.vlxnode.name}")
+            self.limitSwitchDevice.update_state('off')
                 
     def mqtt_callback_open(self) -> None:
         """Handle MQTT open command."""
@@ -282,17 +289,23 @@ class VeluxMqttCover:
     def mqtt_callback_keepopen_on(self) -> None:
         """Enable keep-open limitation."""
         logging.debug(f"Enable 'keep open' limitation of {self.vlxnode.name}")
-        call_async_blocking(
-            self.vlxnode.set_position_limitations(  # type: ignore[no-untyped-call]
-                position_max=Position(position_percent=0),  # type: ignore[no-untyped-call]
-                position_min=Position(position_percent=0)  # type: ignore[no-untyped-call]
+        try:
+            call_async_blocking(
+                self.vlxnode.set_position_limitations(  # type: ignore[no-untyped-call]
+                    position_min=Position(position_percent=0),  # type: ignore[no-untyped-call]
+                    position_max=Position(position_percent=0)  # type: ignore[no-untyped-call]
+                )
             )
-        )
+        except Exception as e:
+            logging.warning(f"Failed to set position limitations: {e}")
 
     def mqtt_callback_keepopen_off(self) -> None:
         """Disable keep-open limitation."""
         logging.debug(f"Disable 'keep open' limitation of {self.vlxnode.name}")
-        call_async_blocking(self.vlxnode.clear_position_limitations())  # type: ignore[no-untyped-call]
+        try:
+            call_async_blocking(self.vlxnode.clear_position_limitations())  # type: ignore[no-untyped-call]
+        except Exception as e:
+            logging.warning(f"Failed to clear position limitations: {e}")
 
     def close(self) -> None:
         """Properly close and cleanup device."""
@@ -336,7 +349,7 @@ class VeluxMqttCoverInverted(VeluxMqttCover):
     def updateCover(self) -> None:
         """Update cover with inverted state."""
         position = self.vlxnode.position.position_percent
-        target_position = self.vlxnode.target_position.position_percent
+        target_position = self.vlxnode.target.position_percent
 
         self.coverDevice.publish_position(position)
         
@@ -471,7 +484,8 @@ class VeluxMqttHomeassistant:
         
         if self.pyvlx:
             try:
-                self.pyvlx.disconnect()  # type: ignore[no-untyped-call]
+                if not LOOP.is_closed():
+                    LOOP.run_until_complete(self.pyvlx.disconnect())  # type: ignore[no-untyped-call]
                 logging.info("Disconnected from KLF200")
             except Exception as e:
                 logging.error(f"Error disconnecting from KLF200: {e}", exc_info=True)
@@ -545,7 +559,8 @@ def get_pid_file_path() -> Path:
     if sys.platform == "win32":
         pid_dir = Path(os.environ.get("TEMP", "."))
     else:
-        pid_dir = Path("/var/run") if Path("/var/run").exists() else Path(tempfile.gettempdir())
+        var_run = Path("/var/run")
+        pid_dir = var_run if var_run.exists() and os.access(var_run, os.W_OK) else Path(tempfile.gettempdir())
     
     return pid_dir / f"{APPNAME}.pid"
 
@@ -567,7 +582,6 @@ if __name__ == '__main__':
     try:
         LOOP = asyncio.new_event_loop()
         asyncio.set_event_loop(LOOP)
-        _restart_event = asyncio.Event()
 
         pid_file_path = get_pid_file_path()
         
@@ -593,6 +607,8 @@ if __name__ == '__main__':
 
         # Initialize application
         veluxMqttHomeassistant = VeluxMqttHomeassistant()
+        health_check_task_obj: Optional[asyncio.Task[None]] = None
+        restart_interval_task_obj: Optional[asyncio.Task[None]] = None
         
         try:
             LOOP.run_until_complete(veluxMqttHomeassistant.connect_mqtt())
