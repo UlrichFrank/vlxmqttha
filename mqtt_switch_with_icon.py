@@ -28,6 +28,20 @@ class MqttSwitchWithIcon(MqttSwitch):
         super().__init__(settings)
 
     def pre_discovery(self) -> None:
-        """Configure icon for Homeassistant discovery."""
+        """Configure icon and availability for Homeassistant discovery."""
         self.add_config_option("icon", self.icon)
+        availability_topic = f"{self.base_topic}/available"
+        self.add_config_option("availability_topic", availability_topic)
+        self.add_config_option("payload_available", "online")
+        self.add_config_option("payload_not_available", "offline")
         super().pre_discovery()
+
+    def publish_availability(self, available: bool = True) -> None:
+        """Publish device availability status to MQTT.
+        
+        Args:
+            available: True for online, False for offline
+        """
+        availability_topic = f"{self.base_topic}/available"
+        status = "online" if available else "offline"
+        self._client.publish(availability_topic, status, retain=True)

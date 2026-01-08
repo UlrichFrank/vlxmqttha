@@ -1,3 +1,4 @@
 homeassistant-mqtt-binding==3.0.0
 paho-mqtt==2.1.0
 PyYAML==6.0.3
+zeroconf>=0.130.0
