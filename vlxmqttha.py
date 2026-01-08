@@ -178,6 +178,7 @@ class VeluxMqttCover:
         self.haDevice: HaDevice = HaDevice(HA_PREFIX + vlxnode.name, HA_PREFIX + mqttid)
         self.coverDevice: MqttCover = self.makeMqttCover()
         self.limitSwitchDevice: MqttSwitchWithIcon = self.makeMqttKeepOpenSwitch()
+        self.last_state: Optional[str] = None  # Track last state to detect changes
     
     def makeMqttCover(self) -> MqttCover:
         """Create MQTT cover device with appropriate device class."""
@@ -218,6 +219,10 @@ class VeluxMqttCover:
         self.coverDevice.pre_discovery()
         self.limitSwitchDevice.pre_discovery()
         
+        # Publish initial online status
+        self.coverDevice.publish_availability(True)
+        self.limitSwitchDevice.publish_availability(True)
+        
         self.coverDevice.callback_open = self.mqtt_callback_open
         self.coverDevice.callback_close = self.mqtt_callback_close
         self.coverDevice.callback_stop = self.mqtt_callback_stop
@@ -230,24 +235,52 @@ class VeluxMqttCover:
         logging.debug(f"Updating {self.vlxnode.name}")
         self.updateCover()
         self.updateLimitSwitch()
+        # Publish online status when node is updated
+        self.coverDevice.publish_availability(True)
+        self.limitSwitchDevice.publish_availability(True)
         
     def updateCover(self) -> None:
         """Update cover state based on VLX node."""
         position = self.vlxnode.position.position_percent
-        target_position = self.vlxnode.target.position_percent
+        target_position = self.vlxnode.target_position.position_percent
+        
+        # Ensure position is in valid range (0-100)
+        # If out of range, use current position as fallback
+        if position < 0 or position > 100:
+            logging.warning(f"{self.vlxnode.name}: Invalid position {position}, using fallback")
+            position = 0
+            
+        if target_position < 0 or target_position > 100:
+            logging.debug(f"{self.vlxnode.name}: Invalid target position {target_position}, assuming stopped at {position}")
+            target_position = position
 
         self.coverDevice.publish_position(position)
         
-        if target_position < position:
+        # Determine state based on position and target position
+        # First check if we're at the target position (stopped)
+        if position == target_position:
+            # Device has stopped - determine final state
+            if position == 100:
+                mqtt_state = "closed"
+            else:
+                mqtt_state = "open"
+        # Then check if we're moving towards a target
+        elif target_position < position:
             mqtt_state = "opening"
         elif target_position > position:
             mqtt_state = "closing"
-        elif position == 100:
-            mqtt_state = "closed"
         else:
+            # Fallback (shouldn't reach here)
             mqtt_state = "open"
         
+        # Always update state to ensure it reflects current conditions
+        # This prevents state from getting stuck
         self.coverDevice.update_state(mqtt_state)
+        if mqtt_state != self.last_state:
+            self.last_state = mqtt_state
+            logging.debug(f"{self.vlxnode.name}: position={position}%, target={target_position}%, state={mqtt_state}")
+        else:
+            logging.debug(f"{self.vlxnode.name}: position={position}%, target={target_position}%, state={mqtt_state} (unchanged)")
 
     def updateLimitSwitch(self) -> None:
         """Update keep-open switch state."""
@@ -349,20 +382,44 @@ class VeluxMqttCoverInverted(VeluxMqttCover):
     def updateCover(self) -> None:
         """Update cover with inverted state."""
         position = self.vlxnode.position.position_percent
-        target_position = self.vlxnode.target.position_percent
+        target_position = self.vlxnode.target_position.position_percent
+        
+        # Ensure position is in valid range (0-100)
+        # If out of range, use current position as fallback
+        if position < 0 or position > 100:
+            logging.warning(f"{self.vlxnode.name}: Invalid position {position}, using fallback")
+            position = 0
+            
+        if target_position < 0 or target_position > 100:
+            logging.debug(f"{self.vlxnode.name}: Invalid target position {target_position}, assuming stopped at {position}")
+            target_position = position
 
         self.coverDevice.publish_position(position)
         
-        if target_position < position:
+        # Determine state based on position and target position (inverted logic)
+        # First check if we're at the target position (stopped)
+        if position == target_position:
+            # Device has stopped - determine final state (inverted)
+            if position == 0:
+                mqtt_state = "closed"
+            else:
+                mqtt_state = "open"
+        # Then check if we're moving towards a target (inverted)
+        elif target_position < position:
             mqtt_state = "closing"
         elif target_position > position:
             mqtt_state = "opening"
-        elif position == 0:
-            mqtt_state = "closed"
         else:
+            # Fallback (shouldn't reach here)
             mqtt_state = "open"
         
+        # Always update state to ensure it reflects current conditions
         self.coverDevice.update_state(mqtt_state)
+        if mqtt_state != self.last_state:
+            self.last_state = mqtt_state
+            logging.debug(f"{self.vlxnode.name} (inverted): position={position}%, target={target_position}%, state={mqtt_state}")
+        else:
+            logging.debug(f"{self.vlxnode.name} (inverted): position={position}%, target={target_position}%, state={mqtt_state} (unchanged)")
 
 
 
@@ -441,6 +498,13 @@ class VeluxMqttHomeassistant:
                 self.mqttDevices[mqttid] = cover
                 await cover.registerMqttCallbacks()
                 logging.debug(f"Watching: {vlxnode.name}")
+                
+                # Initialize target position to current position to ensure valid state
+                # This prevents showing "closing" with an invalid target position
+                try:
+                    await vlxnode.stop(wait_for_completion=False)  # type: ignore[no-untyped-call]
+                except Exception as e:
+                    logging.debug(f"Could not initialize {vlxnode.name} with stop: {e}")
     
     async def update_device_state(self) -> None:
         """Request initial state of all devices."""
@@ -496,6 +560,29 @@ class VeluxMqttHomeassistant:
             self.close()
         except Exception:
             pass  # Avoid exceptions in __del__
+
+
+async def state_update_task(homeassistant_instance: VeluxMqttHomeassistant) -> None:
+    """Periodically update device states from KLF200."""
+    STATE_UPDATE_INTERVAL = 5  # Update state every 5 seconds
+    
+    logging.info(f"State update task enabled: every {STATE_UPDATE_INTERVAL} seconds")
+    
+    while True:
+        try:
+            await asyncio.sleep(STATE_UPDATE_INTERVAL)
+            
+            # Update state for all registered devices
+            for mqttid, mqttDevice in homeassistant_instance.mqttDevices.items():
+                try:
+                    mqttDevice.updateNode()
+                except Exception as e:
+                    logging.debug(f"Error updating state for {mqttDevice.vlxnode.name}: {e}")
+        except asyncio.CancelledError:
+            logging.info("State update task cancelled")
+            break
+        except Exception as e:
+            logging.error(f"Error in state update task: {e}", exc_info=True)
 
 
 async def health_check_task() -> None:
@@ -609,6 +696,7 @@ if __name__ == '__main__':
         veluxMqttHomeassistant = VeluxMqttHomeassistant()
         health_check_task_obj: Optional[asyncio.Task[None]] = None
         restart_interval_task_obj: Optional[asyncio.Task[None]] = None
+        state_update_task_obj: Optional[asyncio.Task[None]] = None
         
         try:
             LOOP.run_until_complete(veluxMqttHomeassistant.connect_mqtt())
@@ -619,6 +707,7 @@ if __name__ == '__main__':
             # Create background tasks for health check and restart interval
             health_check_task_obj = asyncio.ensure_future(health_check_task())
             restart_interval_task_obj = asyncio.ensure_future(restart_interval_task())
+            state_update_task_obj = asyncio.ensure_future(state_update_task(veluxMqttHomeassistant))
 
             if RESTART_INTERVAL > 0:
                 logging.info(f"Scheduled restart every {RESTART_INTERVAL} hours")
@@ -636,7 +725,7 @@ if __name__ == '__main__':
             sys.exit(1)
         finally:
             # Cancel background tasks
-            for task in [health_check_task_obj, restart_interval_task_obj]:
+            for task in [health_check_task_obj, restart_interval_task_obj, state_update_task_obj]:
                 if task and not task.done():
                     task.cancel()
             

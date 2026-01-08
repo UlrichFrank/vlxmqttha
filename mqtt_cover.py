@@ -5,7 +5,6 @@ MQTT Cover device implementation for Homeassistant autodiscovery.
 #  This code is published under the MIT license
 
 import threading
-import time
 from typing import Callable, Optional
 
 from paho.mqtt.client import Client, MQTTMessage
@@ -13,9 +12,6 @@ from paho.mqtt.client import Client, MQTTMessage
 from ha_mqtt import mqtt_device_base
 from ha_mqtt.util import HaCoverDeviceClass
 from ha_mqtt.mqtt_device_base import MqttDeviceSettings
-
-# Allow MQTT client time to process between operations (milliseconds)
-MQTT_PUBLISH_DELAY_MS = 10
 
 
 class MqttCover(mqtt_device_base.MqttDeviceBase):
@@ -73,10 +69,14 @@ class MqttCover(mqtt_device_base.MqttDeviceBase):
         """Configure MQTT topics and device class for Homeassistant discovery."""
         self.position_topic = f"{self.base_topic}/position"
         self.command_topic = f"{self.base_topic}/set"
+        availability_topic = f"{self.base_topic}/available"
 
         self.add_config_option("position_topic", self.position_topic)
         self.add_config_option("command_topic", self.command_topic)
         self.add_config_option("set_position_topic", self.command_topic)
+        self.add_config_option("availability_topic", availability_topic)
+        self.add_config_option("payload_available", "online")
+        self.add_config_option("payload_not_available", "offline")
         
         if self.inverse_position:
             self.add_config_option("position_open", "100")
@@ -99,8 +99,17 @@ class MqttCover(mqtt_device_base.MqttDeviceBase):
         """
         self._logger.debug(f"Publishing position {position}% for {self._unique_id}")
         self._client.publish(self.position_topic, str(position), retain=retain)
-        # Give MQTT client time to process before next operation
-        time.sleep(MQTT_PUBLISH_DELAY_MS / 1000.0)
+
+    def publish_availability(self, available: bool = True) -> None:
+        """Publish device availability status to MQTT.
+        
+        Args:
+            available: True for online, False for offline
+        """
+        availability_topic = f"{self.base_topic}/available"
+        status = "online" if available else "offline"
+        self._logger.debug(f"Publishing availability {status} for {self._unique_id}")
+        self._client.publish(availability_topic, status, retain=True)
 
     def command_callback(
         self,
