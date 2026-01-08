@@ -366,7 +366,7 @@ class VeluxMqttHomeassistant:
     
     def __init__(self) -> None:
         mqtt_client_id = f"{APPNAME}_{os.getpid()}"
-        self.mqttc: mqtt.Client = mqtt.Client(CallbackAPIVersion.VERSION1, mqtt_client_id)
+        self.mqttc: mqtt.Client = mqtt.Client(CallbackAPIVersion.VERSION2, mqtt_client_id)
         self.pyvlx: Optional[PyVLX] = None
         self.mqttDevices: Dict[str, VeluxMqttCover] = {}
 
@@ -565,7 +565,8 @@ if __name__ == '__main__':
     import tempfile
     
     try:
-        LOOP = asyncio.get_event_loop()
+        LOOP = asyncio.new_event_loop()
+        asyncio.set_event_loop(LOOP)
         _restart_event = asyncio.Event()
 
         pid_file_path = get_pid_file_path()
